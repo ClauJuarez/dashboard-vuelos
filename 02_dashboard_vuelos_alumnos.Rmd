@@ -1,0 +1,507 @@
+---
+title: "Monitor de puntualidad aérea"
+subtitle: "¿Dónde y cuándo se concentran los retrasos?"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    theme: cosmo
+    source_code: embed
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(nycflights13)
+library(scales)
+library(DT)
+library(plotly)
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# DATOS Y VARIABLES ANALÍTICAS
+# -----------------------------------------------------------------------------
+vuelos <- flights |>
+  mutate(
+    fecha = as.Date(sprintf("%04d-%02d-%02d", year, month, day)),
+    hora_programada = sched_dep_time %/% 100,
+    cancelado = is.na(dep_time),
+    retrasado_15 = dep_delay > 15,
+    retrasado_60 = dep_delay > 60
+  )
+
+# KPIs
+kpi_total <- nrow(vuelos)
+kpi_retrasados <- mean(vuelos$retrasado_15, na.rm = TRUE)
+kpi_cancelados <- mean(vuelos$cancelado)
+kpi_mediana <- median(vuelos$dep_delay, na.rm = TRUE)
+
+# Resumen mensual
+mensual <- vuelos |>
+  group_by(month) |>
+  summarise(
+    vuelos = n(),
+    pct_retrasados_15 = mean(retrasado_15, na.rm = TRUE),
+    pct_cancelado = mean(cancelado),
+    retraso_mediano = median(dep_delay, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+mes_pico <- mensual |>
+  slice_max(pct_retrasados_15, n = 1, with_ties = FALSE)
+
+# Aeropuertos
+por_origen <- vuelos |>
+  group_by(origin) |>
+  summarise(
+    vuelos = n(),
+    pct_retrasados_15 = mean(retrasado_15, na.rm = TRUE),
+    pct_cancelado = mean(cancelado),
+    retraso_mediano = median(dep_delay, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+origen_mayor <- por_origen |>
+  slice_max(pct_retrasados_15, n = 1, with_ties = FALSE)
+
+# Aerolíneas
+por_aerolinea <- vuelos |>
+  group_by(carrier) |>
+  summarise(
+    vuelos = n(),
+    pct_retrasados_15 = mean(retrasado_15, na.rm = TRUE),
+    pct_retrasados_60 = mean(retrasado_60, na.rm = TRUE),
+    pct_cancelado = mean(cancelado),
+    retraso_promedio = mean(dep_delay, na.rm = TRUE),
+    retraso_mediano = median(dep_delay, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+aerolineas_comparables <- por_aerolinea |>
+  filter(vuelos >= 1000)
+
+# Hora
+por_hora <- vuelos |>
+  filter(!is.na(hora_programada), between(hora_programada, 0, 23)) |>
+  group_by(hora_programada) |>
+  summarise(
+    vuelos = n(),
+    pct_retrasados_15 = mean(retrasado_15, na.rm = TRUE),
+    retraso_mediano = median(dep_delay, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+hora_pico <- por_hora |>
+  filter(vuelos >= 500) |>
+  slice_max(pct_retrasados_15, n = 1, with_ties = FALSE)
+
+# Heatmap para exploración
+heatmap <- vuelos |>
+  filter(!is.na(hora_programada), between(hora_programada, 5, 23)) |>
+  group_by(month, hora_programada) |>
+  summarise(
+    vuelos = n(),
+    pct_retrasados_15 = mean(retrasado_15, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Tabla de consulta
+tabla_aerolineas <- aerolineas_comparables |>
+  arrange(desc(pct_retrasados_15)) |>
+  transmute(
+    Aerolínea = carrier,
+    Vuelos = vuelos,
+    `Retrasados > 15 min` = pct_retrasados_15,
+    `Retrasados > 60 min` = pct_retrasados_60,
+    `Cancelaciones` = pct_cancelado,
+    `Retraso mediano (min)` = retraso_mediano
+  )
+
+mes_nombre <- c("enero", "febrero", "marzo", "abril", "mayo", "junio",
+                "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+
+azul <- "#2780E3"
+naranja <- "#F39C12"
+gris <- "#6C757D"
+azul_claro <- "#EAF3FC"
+
+tema_dashboard <- theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, margin = margin(b = 5)),
+    plot.subtitle = element_text(size = 10.5, color = gris, margin = margin(b = 8)),
+    axis.title = element_text(size = 10.5, color = gris),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(10, 12, 8, 8)
+  )
+```
+
+
+Resumen ejecutivo
+===============================
+
+Row
+-------------------------------
+
+### Vuelos programados
+
+```{r kpi-total}
+valueBox(
+  value = comma(kpi_total),
+  caption = "Vuelos programados",
+  icon = "fa-plane",
+  color = "primary"
+)
+```
+
+### Retrasados > 15 min
+
+```{r kpi-retrasados}
+valueBox(
+  value = percent(kpi_retrasados, accuracy = 0.1),
+  caption = "Retrasados > 15 min",
+  icon = "fa-clock-o",
+  color = "warning"
+)
+```
+
+### Retraso mediano
+
+```{r kpi-mediana}
+valueBox(
+  value = paste0(number(kpi_mediana, accuracy = 0.1), " min"),
+  caption = "Retraso mediano",
+  icon = "fa-line-chart",
+  color = "primary"
+)
+```
+
+### Cancelaciones
+
+```{r kpi-cancelados}
+valueBox(
+  value = percent(kpi_cancelados, accuracy = 0.1),
+  caption = "Cancelaciones",
+  icon = "fa-ban",
+  color = "primary"
+)
+```
+
+Row
+-------------------------------
+
+### La puntualidad cambia durante el año {data-width=650}
+
+```{r grafica-mensual}
+grafica_mensual <- ggplot(
+  mensual,
+  aes(x = month, y = pct_retrasados_15)
+) +
+  geom_line(linewidth = 1.05, color = azul) +
+  geom_point(size = 2.6, color = azul) +
+  geom_point(
+    data = mes_pico,
+    size = 4.4,
+    color = naranja
+  ) +
+  geom_text(
+    data = mes_pico,
+    aes(label = paste0("  ", percent(pct_retrasados_15, accuracy = 0.1))),
+    hjust = 0,
+    vjust = -0.6,
+    size = 3.5,
+    fontface = "bold",
+    color = naranja
+  ) +
+  scale_x_continuous(breaks = 1:12) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, max(mensual$pct_retrasados_15) * 1.18),
+    expand = expansion(mult = c(0, .02))
+  ) +
+  labs(
+    title = "La frecuencia de retrasos cambia durante el año",
+    subtitle = "El punto destacado identifica el mes con mayor proporción de salidas > 15 min",
+    x = "Mes",
+    y = "Vuelos retrasados"
+  ) +
+  tema_dashboard
+
+grafica_mensual
+```
+
+### Los aeropuertos presentan diferencias {data-width=350}
+
+```{r grafica-origen}
+ggplot(
+  por_origen,
+  aes(x = reorder(origin, pct_retrasados_15), y = pct_retrasados_15)
+) +
+  geom_col(width = .62, fill = azul) +
+  geom_text(
+    aes(label = percent(pct_retrasados_15, accuracy = 0.1)),
+    vjust = -0.55,
+    size = 3.4,
+    fontface = "bold",
+    color = azul
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, max(por_origen$pct_retrasados_15) * 1.22),
+    expand = expansion(mult = c(0, .01))
+  ) +
+  labs(
+    title = "La puntualidad también varía por aeropuerto",
+    subtitle = "Comparación descriptiva entre JFK, LGA y EWR",
+    x = NULL,
+    y = NULL
+  ) +
+  tema_dashboard +
+  theme(axis.text.y = element_text(face = "bold"))
+```
+
+Row
+-------------------------------
+
+### Lectura ejecutiva
+
+> **Lectura en 20 segundos.** De `r comma(kpi_total)` vuelos programados, `r percent(kpi_retrasados, accuracy = 0.1)` superaron 15 minutos de retraso. El mayor porcentaje mensual se observa en **`r mes_nombre[mes_pico$month]`** (`r percent(mes_pico$pct_retrasados_15, accuracy = 0.1)`), mientras que **`r origen_mayor$origin`** presenta la mayor frecuencia entre los tres aeropuertos. En el diagnóstico veremos además que la frecuencia aumenta conforme avanza el día. Estos patrones son descriptivos, no demuestran causalidad.
+
+> **Criterio principal:** consideramos retrasado un vuelo con salida más de 15 minutos después de la hora programada. Los vuelos sin hora de salida registrada se consideran cancelados.
+
+Diagnóstico operativo
+===============================
+
+Row
+-------------------------------
+
+### Los retrasos se vuelven más frecuentes conforme avanza el día {data-width=600}
+
+```{r grafica-hora}
+ggplot(
+  por_hora,
+  aes(x = hora_programada, y = pct_retrasados_15)
+) +
+  geom_area(fill = azul_claro, alpha = .80) +
+  geom_line(linewidth = 1.05, color = azul) +
+  geom_point(size = 1.8, color = azul) +
+  geom_point(
+    data = hora_pico,
+    size = 4,
+    color = naranja
+  ) +
+  scale_x_continuous(breaks = seq(0, 23, by = 2)) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, .06))
+  ) +
+  labs(
+    title = "Los retrasos se vuelven más frecuentes conforme avanza el día",
+    subtitle = "Porcentaje de vuelos con salida > 15 minutos después de lo programado",
+    x = "Hora programada de salida",
+    y = "Vuelos retrasados"
+  ) +
+  tema_dashboard
+```
+
+### Las diferencias entre aerolíneas son relevantes {data-width=400}
+
+```{r grafica-aerolineas}
+top_aerolineas <- aerolineas_comparables |>
+  arrange(pct_retrasados_15)
+
+ggplot(
+  top_aerolineas,
+  aes(x = reorder(carrier, pct_retrasados_15), y = pct_retrasados_15)
+) +
+  geom_col(width = .66, fill = azul) +
+  coord_flip() +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, .09))
+  ) +
+  labs(
+    title = "La frecuencia de retrasos difiere entre aerolíneas",
+    subtitle = "Solo aerolíneas con al menos 1,000 vuelos",
+    x = NULL,
+    y = "Retrasados > 15 min"
+  ) +
+  tema_dashboard
+```
+
+Row {.tabset}
+-------------------------------
+
+### Cancelaciones por mes
+
+```{r cancelaciones-mes}
+ggplot(mensual, aes(month, pct_cancelado)) +
+  geom_col(width = .68, fill = gris) +
+  scale_x_continuous(breaks = 1:12) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  labs(
+    title = "Las cancelaciones añaden una segunda dimensión del servicio",
+    subtitle = "Se mantienen en segundo nivel para no competir con el KPI principal",
+    x = "Mes",
+    y = "Cancelaciones"
+  ) +
+  tema_dashboard
+```
+
+### Comparación por aeropuerto
+
+```{r tabla-origen}
+por_origen |>
+  transmute(
+    Aeropuerto = origin,
+    Vuelos = comma(vuelos),
+    `Retrasados > 15 min` = percent(pct_retrasados_15, accuracy = 0.1),
+    `Cancelaciones` = percent(pct_cancelado, accuracy = 0.1),
+    `Retraso mediano` = paste0(number(retraso_mediano, accuracy = 0.1), " min")
+  ) |>
+  knitr::kable(
+    align = c("l", "r", "r", "r", "r"),
+    caption = "Tres métricas complementarias para JFK, LGA y EWR"
+  )
+```
+
+### Cómo leer esta página
+
+> **Diagnóstico, no causalidad.** La frecuencia de retrasos aumenta a lo largo del día y difiere entre aerolíneas. El patrón horario es compatible con acumulación operativa de demoras, pero esta evidencia descriptiva no demuestra que la hora sea la causa. Las cancelaciones se muestran como contexto complementario y no sustituyen la métrica principal.
+
+> 
+
+Exploración
+===============================
+
+Row
+-------------------------------
+
+### El riesgo se concentra en determinadas combinaciones de mes y hora
+
+```{r heatmap-interactivo}
+g_heat <- ggplot(
+  heatmap,
+  aes(
+    x = hora_programada,
+    y = factor(month, levels = 12:1),
+    fill = pct_retrasados_15,
+    text = paste0(
+      "Mes: ", month,
+      "  
+> Hora: ", hora_programada, ":00",
+      "  
+> Vuelos: ", comma(vuelos),
+      "  
+> Retrasados >15 min: ", percent(pct_retrasados_15, accuracy = 0.1)
+    )
+  )
+) +
+  geom_tile(color = "white", linewidth = .25) +
+  scale_fill_gradient(
+    low = azul_claro,
+    high = naranja,
+    labels = percent_format(accuracy = 1)
+  ) +
+  scale_x_continuous(breaks = seq(6, 22, by = 2)) +
+  labs(
+    title = "Mes y hora revelan zonas de mayor concentración de retrasos",
+    subtitle = "Pasa el cursor para consultar el valor de cada combinación",
+    x = "Hora programada",
+    y = "Mes",
+    fill = "> 15 min"
+  ) +
+  tema_dashboard +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    axis.title = element_text(color = gris)
+  )
+
+plotly::ggplotly(g_heat, tooltip = "text") |>
+  plotly::layout(
+    margin = list(l = 55, r = 20, b = 50, t = 70),
+    hoverlabel = list(align = "left")
+  )
+```
+
+Row {.tabset}
+-------------------------------
+
+### Consulta por aerolínea
+
+```{r tabla-interactiva}
+DT::datatable(
+  tabla_aerolineas,
+  rownames = FALSE,
+  filter = "top",
+  extensions = "Buttons",
+  options = list(
+    pageLength = 8,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv"),
+    autoWidth = TRUE,
+    language = list(
+      search = "Buscar:",
+      info = "Mostrando _START_ a _END_ de _TOTAL_",
+      paginate = list(previous = "Anterior", `next` = "Siguiente")
+    )
+  )
+) |>
+  DT::formatPercentage(
+    columns = c("Retrasados > 15 min", "Retrasados > 60 min", "Cancelaciones"),
+    digits = 1
+  ) |>
+  DT::formatRound("Retraso mediano (min)", digits = 1)
+```
+
+### Función de esta página
+
+> Esta página permite localizar combinaciones específicas y consultar aerolíneas en detalle. Ese nivel de densidad sería inapropiado en la portada ejecutiva, pero aquí responde a una necesidad distinta del usuario.
+
+**Principio de diseño:** Cada página tiene un propósito diferente y, por lo tanto, una densidad visual diferente.
+
+Decisiones de diseño
+===============================
+
+Row
+-------------------------------
+
+### Qué decidimos mostrar
+
+**1. Una métrica principal.** El porcentaje de vuelos con más de 15 minutos de retraso domina la narrativa porque es interpretable para una audiencia no técnica.
+
+**2. Tres niveles de lectura.** Resumen ejecutivo para comprensión rápida; diagnóstico para ubicar patrones; exploración para consulta de detalle.
+
+**3. Color con función.** Azul construye consistencia; naranja se reserva para énfasis y valores de mayor atención. 
+
+**4. Tamaño con función.** La visualización mensual recibe más espacio que la comparación de tres aeropuertos porque contiene más información y sostiene un hallazgo central.
+
+
+### Qué decidimos NO mostrar
+
+**No mostramos todo lo calculado.** Quedaron fuera tablas de consola, métricas redundantes, rankings alternativos completos, gráficos decorativos y colores sin significado. El análisis puede ser extenso; el producto debe ser selectivo.
+
+### Extras
+
+- **Los tabs** reducen saturación, pero esconden información, son adecuados para perspectivas alternativas de un mismo tema. No son una solución para meter indefinidamente más contenido.
+
+- **La interactividad** debe resolver una necesidad. El mapa de calor permite consultar combinaciones específicas de mes × hora sin llenar la visualización de etiquetas. La tabla DT permite buscar y recuperar valores exactos. Ninguna de esas interacciones requiere reactividad de R.
+
+
+Row
+-------------------------------
+
+### Pregunta de cierre
+
+> Si tuvieras que eliminar el 30% de los elementos sin perder el mensaje principal, ¿qué quitarías primero?
+
+>
