@@ -53,7 +53,7 @@ jobs:
 
       - name: Render dashboard
         run: | 
-          rmarkdown::render(input = "02_dashboard_vuelos_profesor.Rmd", output_file = "index.html" , output_dir = "_site")
+          rmarkdown::render(input = "02_dashboard_vuelos_alumnos.Rmd", output_file = "index.html" , output_dir = "_site")
         shell: Rscript {0}  
 
       - name: Setup GitHub Pages
