@@ -39,7 +39,7 @@ jobs:
 
       - name: Intall R packages
         run: |
-          install.oackages(c(
+          install.packages(c(
             "rmarkdown",
             "flexdashboard",
             "tidyverse",
